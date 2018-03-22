@@ -11,6 +11,8 @@ import requests
 import json
 import re
 from collections import namedtuple
+from requests.models import PreparedRequest
+
 
 try:
     from urlparse import urlparse, urljoin
@@ -350,13 +352,43 @@ class Salesforce(object):
                    SELECT Id FROM Lead WHERE Email = "waldo@somewhere.com"
         * include_deleted -- True if deleted records should be included
         """
-        url = self.base_url + ('queryAll/' if include_deleted else 'query/')
+        url = self.base_url + ('queryAll/' if include_deleted else 'query2/')
         params = {'q': query}
         # `requests` will correctly encode the query string passed as `params`
-        result = self._call_salesforce('GET', url, name='query',
+        pr = PreparedRequest()
+        if len(query) > 14000:
+            pr.prepare_url(url, params)
+
+            params = {"compositeRequest": [{
+                "method": "GET",
+                "url": pr.url[pr.url.find('.salesforce.com/') + 15:],
+                "referenceId": "refObject"
+            }]
+            }
+            result = self._call_salesforce('POST', self.base_url + 'composite/', data=json.dumps(params), **kwargs)
+
+        else:
+            result = self._call_salesforce('GET', url, name='query',
                                        params=params, **kwargs)
 
-        return result.json(object_pairs_hook=OrderedDict)
+        #if result.status_code != 200:
+        #    _exception_handler(result)
+
+        result0 = result
+        result = result.json(object_pairs_hook=OrderedDict)
+        if result and isinstance(result, dict) and 'compositeResponse' in result:
+            result = result['compositeResponse']
+            if result and isinstance(result, list):
+                result = result[0]
+                http_status_code = result['httpStatusCode']
+                result = result['body'][0]
+                #if http_status_code != 200:
+                #    result0.status_code = http_status_code
+                #    result0.url = pr.url
+                #    result0._content = result.get('message', '').encode(result0.encoding)
+                #    _exception_handler(result0)
+
+        return result
 
     def query_more(
             self, next_records_identifier, identifier_is_url=False,
