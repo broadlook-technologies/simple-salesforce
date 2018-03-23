@@ -352,7 +352,7 @@ class Salesforce(object):
                    SELECT Id FROM Lead WHERE Email = "waldo@somewhere.com"
         * include_deleted -- True if deleted records should be included
         """
-        url = self.base_url + ('queryAll/' if include_deleted else 'query2/')
+        url = self.base_url + ('queryAll/' if include_deleted else 'query/')
         params = {'q': query}
         # `requests` will correctly encode the query string passed as `params`
         pr = PreparedRequest()
