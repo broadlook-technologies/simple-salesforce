@@ -22,9 +22,7 @@ except ImportError:
 
 from simple_salesforce.login import SalesforceLogin
 from simple_salesforce.util import date_to_iso8601, exception_handler
-from simple_salesforce.exceptions import (
-    SalesforceGeneralError
-)
+from simple_salesforce.exceptions import *
 from simple_salesforce.bulk import SFBulkHandler
 
 try:
@@ -383,28 +381,32 @@ class Salesforce(object):
                 "referenceId": "refObject"
             }]
             }
-            result = self._call_salesforce('POST', self.base_url + 'composite/', data=json.dumps(params), **kwargs)
+            result = self._call_salesforce('POST', self.base_url + 'composite/', name='query', data=json.dumps(params),
+                                           **kwargs)
 
         else:
             result = self._call_salesforce('GET', url, name='query',
                                        params=params, **kwargs)
 
-        #if result.status_code != 200:
-        #    _exception_handler(result)
-
-        result0 = result
         result = result.json(object_pairs_hook=OrderedDict)
         if result and isinstance(result, dict) and 'compositeResponse' in result:
             result = result['compositeResponse']
+
             if result and isinstance(result, list):
                 result = result[0]
                 http_status_code = result['httpStatusCode']
                 result = result['body']
-                #if http_status_code != 200:
-                #    result0.status_code = http_status_code
-                #    result0.url = pr.url
-                #    result0._content = result.get('message', '').encode(result0.encoding)
-                #    _exception_handler(result0)
+                if http_status_code >= 300:
+                    exc_map = {
+                        300: SalesforceMoreThanOneRecord,
+                        400: SalesforceMalformedRequest,
+                        401: SalesforceExpiredSession,
+                        403: SalesforceRefusedRequest,
+                        404: SalesforceResourceNotFound,
+                    }
+                    exc_cls = exc_map.get(http_status_code, SalesforceGeneralError)
+
+                    raise exc_cls(self.base_url + 'composite/', http_status_code, 'query', result)
 
         return result
 
