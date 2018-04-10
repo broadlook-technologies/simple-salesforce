@@ -22,9 +22,7 @@ except ImportError:
 
 from simple_salesforce.login import SalesforceLogin
 from simple_salesforce.util import date_to_iso8601, exception_handler
-from simple_salesforce.exceptions import (
-    SalesforceGeneralError
-)
+from simple_salesforce.exceptions import *
 from simple_salesforce.bulk import SFBulkHandler
 
 try:
@@ -61,8 +59,8 @@ class Salesforce(object):
     def __init__(
             self, username=None, password=None, security_token=None,
             session_id=None, instance=None, instance_url=None,
-            organizationId=None, sandbox=False, version=DEFAULT_API_VERSION,
-            proxies=None, session=None, client_id=None):
+            organizationId=None, sandbox=None, version=DEFAULT_API_VERSION,
+            proxies=None, session=None, client_id=None, domain=None):
         """Initialize the instance with the given parameters.
 
         Available kwargs
@@ -72,8 +70,11 @@ class Salesforce(object):
         * username -- the Salesforce username to use for authentication
         * password -- the password for the username
         * security_token -- the security token for the username
-        * sandbox -- True if you want to login to `test.salesforce.com`, False
-                     if you want to login to `login.salesforce.com`.
+        * sandbox -- DEPRECATED: Use domain instead.
+        * domain -- The domain to using for connecting to Salesforce. Use
+                    common domains, such as 'login' or 'test', or
+                    Salesforce My domain. If not used, will default to
+                    'login'.
 
         Direct Session and Instance Access:
 
@@ -95,11 +96,26 @@ class Salesforce(object):
                      exposed by simple_salesforce.
 
         """
+        if (sandbox is not None) and (domain is not None):
+            raise ValueError("Both 'sandbox' and 'domain' arguments were "
+                             "supplied. Either may be supplied, but not "
+                             "both.")
 
-        # Determine if the user passed in the optional version and/or sandbox
-        # kwargs
+        if sandbox is not None:
+            warnings.warn("'sandbox' argument is deprecated. Use "
+                          "'domain' instead. Overriding 'domain' "
+                          "with 'sandbox' value.",
+                          DeprecationWarning)
+
+            domain = 'test' if sandbox else 'login'
+
+        if domain is None:
+            domain = 'login'
+
+        # Determine if the user passed in the optional version and/or
+        # domain kwargs
         self.sf_version = version
-        self.sandbox = sandbox
+        self.domain = domain
         self.session = session or requests.Session()
         self.proxies = self.session.proxies
         # override custom session proxies dance
@@ -124,10 +140,10 @@ class Salesforce(object):
                 username=username,
                 password=password,
                 security_token=security_token,
-                sandbox=self.sandbox,
                 sf_version=self.sf_version,
                 proxies=self.proxies,
-                client_id=client_id)
+                client_id=client_id,
+                domain=self.domain)
 
         elif all(arg is not None for arg in (
                 session_id, instance or instance_url)):
@@ -151,20 +167,18 @@ class Salesforce(object):
                 username=username,
                 password=password,
                 organizationId=organizationId,
-                sandbox=self.sandbox,
                 sf_version=self.sf_version,
                 proxies=self.proxies,
-                client_id=client_id)
+                client_id=client_id,
+                domain=self.domain)
 
         else:
             raise TypeError(
                 'You must provide login information or an instance and token'
             )
 
-        if self.sandbox:
-            self.auth_site = 'https://test.salesforce.com'
-        else:
-            self.auth_site = 'https://login.salesforce.com'
+        self.auth_site = ('https://{domain}.salesforce.com'
+                          .format(domain=self.domain))
 
         self.headers = {
             'Content-Type': 'application/json',
@@ -274,7 +288,7 @@ class Salesforce(object):
         return self.set_password(user, password)
 
     # Generic Rest Function
-    def restful(self, path, params, method='GET'):
+    def restful(self, path, params=None, method='GET', **kwargs):
         """Allows you to make a direct REST call if you know the path
 
         Arguments:
@@ -283,10 +297,12 @@ class Salesforce(object):
             Example: sobjects/User/ABC123/password'
         * params: dict of parameters to pass to the path
         * method: HTTP request method, default GET
+        * other arguments supported by requests.request (e.g. json, timeout)
         """
 
         url = self.base_url + path
-        result = self._call_salesforce(method, url, name=path, params=params)
+        result = self._call_salesforce(method, url, name=path, params=params,
+                                       **kwargs)
 
         json_result = result.json(object_pairs_hook=OrderedDict)
         if len(json_result) == 0:
@@ -365,28 +381,32 @@ class Salesforce(object):
                 "referenceId": "refObject"
             }]
             }
-            result = self._call_salesforce('POST', self.base_url + 'composite/', data=json.dumps(params), **kwargs)
+            result = self._call_salesforce('POST', self.base_url + 'composite/', name='query', data=json.dumps(params),
+                                           **kwargs)
 
         else:
             result = self._call_salesforce('GET', url, name='query',
                                        params=params, **kwargs)
 
-        #if result.status_code != 200:
-        #    _exception_handler(result)
-
-        result0 = result
         result = result.json(object_pairs_hook=OrderedDict)
         if result and isinstance(result, dict) and 'compositeResponse' in result:
             result = result['compositeResponse']
+
             if result and isinstance(result, list):
                 result = result[0]
                 http_status_code = result['httpStatusCode']
-                result = result['body'][0]
-                #if http_status_code != 200:
-                #    result0.status_code = http_status_code
-                #    result0.url = pr.url
-                #    result0._content = result.get('message', '').encode(result0.encoding)
-                #    _exception_handler(result0)
+                result = result['body']
+                if http_status_code >= 300:
+                    exc_map = {
+                        300: SalesforceMoreThanOneRecord,
+                        400: SalesforceMalformedRequest,
+                        401: SalesforceExpiredSession,
+                        403: SalesforceRefusedRequest,
+                        404: SalesforceResourceNotFound,
+                    }
+                    exc_cls = exc_map.get(http_status_code, SalesforceGeneralError)
+
+                    raise exc_cls(self.base_url + 'composite/', http_status_code, 'query', result)
 
         return result
 
