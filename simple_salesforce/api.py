@@ -381,7 +381,7 @@ class Salesforce(object):
             if result and isinstance(result, list):
                 result = result[0]
                 http_status_code = result['httpStatusCode']
-                result = result['body'][0]
+                result = result['body']
                 #if http_status_code != 200:
                 #    result0.status_code = http_status_code
                 #    result0.url = pr.url
